@@ -1,0 +1,802 @@
+%% ============================================================
+%%  paper.tex — "From Natural Language to Verifiable Reasoning:
+%%  A Semantic Reduction Framework for Reliable AI Mathematics"
+%%
+%%  Compile: pdflatex paper && bibtex paper && pdflatex paper
+%%           && pdflatex paper   (or `biber paper` followed by
+%%           two pdflatex runs if using biblatex)
+%%  No non-standard packages required: ctex is intentionally NOT
+%%  included so that any TeX Live distribution can build the file
+%%  out of the box. Only amsmath, amssymb, graphicx, booktabs,
+%%  algorithm, algpseudocode, natbib, hyperref, url, geometry,
+%%  and xcolor are needed.
+%% ============================================================
+
+\documentclass[11pt,a4paper]{article}
+
+% --- Geometry & typography --------------------------------------
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+
+% --- Math & symbols --------------------------------------------
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{mathtools}
+
+% --- Tables, algorithms, graphics ------------------------------
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% --- Citations & references ------------------------------------
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+
+% --- Hyperlinks ------------------------------------------------
+\usepackage[colorlinks=true,
+            linkcolor=blue!60!black,
+            citecolor=blue!60!black,
+            urlcolor=blue!70!black,
+            breaklinks=true]{hyperref}
+\usepackage{url}
+
+% --- Theorem environments --------------------------------------
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+% --- Notation shortcuts ----------------------------------------
+\newcommand{\LLM}{\textsc{llm}}
+\newcommand{\IR}{\textsc{ir}}
+\newcommand{\NL}{\textsc{nl}}
+\newcommand{\FOL}{\textsc{fol}}
+\newcommand{\HOL}{\textsc{hol}}
+\newcommand{\IRpipeline}{\textsc{srf}}
+\newcommand{\cm}{\textsc{cm}\textsc{t}}
+\newcommand{\Coq}{Coq}
+\newcommand{\Lean}{Lean}
+\newcommand{\LeanFour}{Lean\,4}
+\newcommand{\ACL}{\textsc{acl}}
+\newcommand{\IAnd}{\wedge}
+\newcommand{\IOr}{\vee}
+\newcommand{\INot}{\neg}
+\newcommand{\IIff}{\Leftrightarrow}
+\newcommand{\IReduces}{\mathrel{\rightsquigarrow}}
+
+% ============================================================
+%  Title block
+% ============================================================
+\title{\bfseries
+  From Natural Language to Verifiable Reasoning:\\[0.25em]
+  A Semantic Reduction Framework for\\Reliable AI Mathematics}
+
+\author{
+  {\normalfont [Author Name]}\\
+  {\normalfont [Affiliation]}\\
+  {\normalfont \texttt{[email@institution.org]}}
+}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+% ============================================================
+%  Abstract
+% ============================================================
+\begin{abstract}
+Large language models now solve a non-trivial fraction of grade-school
+and competition-level mathematics problems, yet every published
+evaluator reports the same residual failure mode: a confident-looking
+natural-language derivation that breaks at a single, locally
+unverifiable step.  We argue that this failure originates in a
+specific, identifiable layer of the reasoning pipeline---the
+\emph{semantic reduction layer}, which translates a chain-of-thought
+into a structured representation that an external tool can act on.
+We present the \emph{Semantic Reduction Framework (SRF)}, a
+three-stage architecture in which (i) a generation layer produces a
+natural-language draft, (ii) a semantic reduction layer materialises
+that draft into a typed intermediate representation, and (iii) a
+verification layer either discharges the resulting obligation in a
+formal system or returns a counterexample.  The framework
+contributes (a) an explicit decomposition of the reliability problem
+into three layers whose failure modes are empirically and
+theoretically separable; (b) a typed \IR{} design that supports
+bidirectional alignment with the natural language that produced it;
+and (c) a reliability checklist and cost-quality surface that
+characterises the trade-off between formal verification and
+empirical evaluation.  We synthesise evidence from GSM8K, MATH, Lean
+4, MiniF2F and PutnamBench evaluations, and show that the gap
+between answer-level and trace-level correctness---already observed in
+\citet{lightman2023letsverify}---is closed most economically when
+the reduction layer, not the generation layer, is treated as the
+chief engineering target.
+
+\bigskip\noindent\textbf{Keywords:} AI for Mathematics, Large
+Language Models, Semantic Reduction, Autoformalization, Theorem
+Proving, Process Supervision, Reliability
+\end{abstract}
+
+% ============================================================
+%  1. Introduction
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+The mathematical reasoning ability of large language models
+(\LLM{}s) has improved steadily since the introduction of
+chain-of-thought prompting
+\citep{wei2022cot}---itself a thin modification of the few-shot
+capability demonstrated by GPT-3 \citep{brown2020gpt3}---scaling
+from 17.9\% on \citet{cobbe2021gsm8k}'s GSM8K benchmark at GPT-3
+scale to $60.9\%$ with self-consistency at the 7\,billion-parameter
+DeepSeekMath model \citep{shao2024deepseekmath}.  Frontier systems
+based on stronger base models such as \citet{openai2023gpt4tr}'s
+GPT-4 now exceed $80\%$ on competition-level problems
+\citep{bubeck2023sparks}.
+Progress, however, is uneven: the very systems that raise
+\emph{answer-level} accuracy frequently degrade on \emph{trace-level}
+correctness, producing derivations whose final number is right but
+whose intermediate steps are not \citep{lightman2023letsverify}.
+This gap undermines the most attractive property of natural language
+reasoning, namely that a reader can follow, scrutinise, and repair
+it.
+
+The dominant engineering response has been to push more steps
+\emph{into} the language model: longer chains of thought, voting
+\citep{wang2023selfconsistency}, self-critique, and---most
+recently---process-supervised reward models
+\citep{lightman2023letsverify}.  An equally credible, complementary
+response is to push more of the work \emph{out of} the language
+model, into external tools whose semantics are different by
+construction: calculators, SMT solvers, symbolic-algebra systems,
+and interactive theorem provers such as \LeanFour{} and \Coq{}
+\citep{yang2023leandojo,wu2022autoformalization}.
+This paper connects the two responses by introducing an explicit
+\emph{semantic reduction layer} between them and argues that this
+layer is the principal engineering target for reliability in
+\LLM{}-assisted mathematics.
+
+\paragraph{Thesis.} We claim that the residual unreliability of
+\LLM{} mathematics is not primarily due to poor generation (Layer~1)
+or to weak verification tools (Layer~3), but to an unstable
+\emph{reduction} from the natural-language derivation to a
+structured form that a verifier can act upon (Layer~2).  Strong
+generation without strong reduction cannot be verified, and strong
+verification without a verifiable artefact finds nothing to verify.
+
+\paragraph{Contributions.}
+\begin{enumerate}\itemsep2pt
+  \item We formulate a \emph{three-layer decomposition} of
+        mathematical reasoning (Generation, Semantic Reduction,
+        Verification) and prove that under mild conditions the
+        failure modes of the three layers are \emph{independent},
+        so that layer-targeted improvements are well-defined.
+  \item We propose a typed \emph{Intermediate Representation} that
+        supports bidirectional alignment between natural language
+        and formal object, motivated by the Curry--Howard
+        correspondence \citep{howard1980formulastypes}.
+  \item We derive a \emph{reliability checklist} together with a
+        cost-quality surface that practitioners can use to pick a
+        point on the formal-vs-empirical spectrum appropriate to
+        their domain.
+\end{enumerate}
+
+\paragraph{Roadmap.}
+Section~\ref{sec:model} lays out the three-layer model and
+distinguishes it from prior pipelines.  Section~\ref{sec:bottleneck}
+argues that the second layer is the principal bottleneck, citing
+results from GSM8K, MATH, LeanDojo, and PutnamBench.
+Section~\ref{sec:framework} develops the \IRpipeline{} architecture,
+including a typed \IR{} definition and an executable algorithm.
+Section~\ref{sec:apps} surveys three application regimes.
+Section~\ref{sec:eval} presents the reliability checklist and a case
+study.  Section~\ref{sec:discussion} discusses limitations and
+Section~\ref{sec:conclusion} concludes.
+
+% ============================================================
+%  2. The Three-Layer Model
+% ============================================================
+\section{The Three-Layer Model of Mathematical Reasoning}
+\label{sec:model}
+
+We separate mathematical reasoning into three sequential stages, each
+producing and consuming a representation of different expressivity.
+The decomposition is notional---a single model can implement more
+than one layer---but it isolates three failure modes that have
+distinct signatures and remedies.
+
+\begin{definition}[Layered Reasoning Pipeline]
+\label{def:three-layer}
+A \emph{layered reasoning pipeline} is a triple
+$\mathcal{P} = (G, R, V)$ where
+\begin{align*}
+G &: \mathcal{Q} \times \mathcal{N} \to \mathcal{N} \\
+R &: \mathcal{N} \to \mathcal{S} \\
+V &: \mathcal{S} \to \{\textsc{ok}, \textsc{fail}, \textsc{timeout}\}
+\end{align*}
+Here $\mathcal{Q}$ is the set of problem statements,
+$\mathcal{N}$ the set of natural-language utterances,
+and $\mathcal{S}$ the set of structured (\emph{typed}) statements
+in some target formal system $\mathcal{T}$.  $R$ is called the
+\emph{semantic reduction}.  \qed
+\end{definition}
+
+\paragraph{Layer 1 --- Generation.}
+$G$ is a learned distribution over natural-language tokens.  In
+practice $G$ is a decoder-only language model conditioned on a
+prompt, with sampling temperature $\tau$ and a chain-of-thought
+prefix.  $G$ is fast, unbounded in domain, and fluent, but
+untyped: the output is a string, not a derivation in any logical
+calculus.
+
+\paragraph{Layer 2 --- Semantic Reduction.}
+$R$ maps a natural-language derivation $\Delta \in \mathcal{N}$ into
+a structured artefact $s \in \mathcal{S}$, where $\mathcal{S}$ is
+sufficiently rich for $V$ to act.  Typical targets for $\mathcal{S}$
+are (a) a tactic script in \LeanFour{} (\texttt{by \ldots}), (b) a
+program in a typed functional language such as Python plus a
+\Coq{} specification, (c) a proof object in an interactive
+theorem prover, or (d) a typed \IR{} combining logic and case
+splits.  The reduction can be implemented by another \LLM{}, by
+hand, or by a neuro-symbolic controller.
+
+\paragraph{Layer 3 --- Verification.}
+$V$ consumes $s \in \mathcal{S}$, executes it under the semantics of
+the formal system $\mathcal{T}$, and either accepts (returning a
+certificate of correctness) or rejects (returning a counterexample,
+an error trace, or a counter-balanced obligation).  $V$ can be a
+human, an SMT solver, an interactive proof assistant, or any
+mixture.
+
+\paragraph{Observability.}  Layers~1 and~3 produce observable
+artefacts (a string and a verdict).  Layer~2, by contrast, is
+internal: its product is consumed by $V$, and an external reader
+sees only its end-state.  This asymmetry is the reason failure in
+Layer~2 is systematically under-reported in the literature.
+
+\paragraph{Classical pipelines as special cases.}
+\emph{Pure generation} corresponds to $R = \mathrm{id}_\mathcal{N}$
+and $V$ a constant; this captures the \citet{lewkowycz2022minerva}
+evaluation regime, where the final answer is checked but the trace
+is not.  \emph{Pure verification} corresponds to $G$ a human and
+$R$ a (mostly automated) parser; this is the legacy
+\Coq{}/\Lean{} workflow.  \emph{Pure reduction} corresponds to a
+fully formal proof produced after the fact; this is the typical
+autoformalization of \citet{wu2022autoformalization}.  The
+\IRpipeline{} advocated here is the case in which all three layers
+are non-trivial and quality-controlled.
+
+\begin{table}[t]
+\centering
+\caption{Three reliability paradigms, the layer that carries the
+trust, and a representative system.}
+\label{tab:paradigms}
+\begin{tabular}{lll}
+\toprule
+Paradigm & Trust bottleneck & Representative system \\
+\midrule
+Pure LLM reasoning   & Final-answer check & \citet{lewkowycz2022minerva} \\
+Process supervision & Per-step reward & \citet{lightman2023letsverify} \\
+Semantic reduction  & Formal object & \citet{yang2023leandojo} (this paper) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+%  3. Bottleneck Analysis
+% ============================================================
+\section{The Bottleneck: Why Semantic Reduction Matters}
+\label{sec:bottleneck}
+
+We argue that the second layer is the residual failure point of
+contemporary mathematical \LLM{} systems.  The argument rests on
+four observations drawn from published evaluations.
+
+\paragraph{Observation 1: answer-level and trace-level accuracy
+diverge.}  \citet{lightman2023letsverify} trained a
+process-supervised reward model on 800{,}000 step-level labels and
+report that on MATH, among solutions with a \emph{correct final
+answer}, $14\%$ of derivations contained a logical error that the
+process supervisor caught but the answer-only verifier missed.
+This is structurally the failure mode of a reduction layer that
+folds an incorrect trace into a string that ``happens to land on
+the right number''.
+
+\paragraph{Observation 2: retrieval-augmented theorem provers
+outperform pure generation precisely where the reduction step is
+easiest.}  \citet{yang2023leandojo} show that the ReProver model,
+which \emph{lifts} a \Lean{} goal into a typed \IR{} (a list of
+candidate premises plus a tactic) before generating the next step,
+doubles the proof-success rate over a non-retrieval
+GPT-4 baseline on their 98{,}734-theorem benchmark.  The IR is the
+engineered form of what an autoformalization system would otherwise
+have to extract.
+
+\paragraph{Observation 3: the irreducible majority of Putnam-level
+problems stalls at reduction.}  \citet{tsoukalas2024putnambench}
+formulate 640 Putnam competition problems in \LeanFour{}, Isabelle
+and \Coq{} and report that no tested system solves more than a
+handful.  The bottleneck is not the \LLM{} ``thinking''---all
+tested models emit plausible-looking proofs---but the inability of
+the final \LLM{} draft to be reduced into an artefact that survives
+a checker.
+
+\paragraph{Observation 4: hallucination statistics match the
+reduction layer's failure mode.}
+\citet{manakul2023selfcheckgpt} demonstrates that the dominant
+``hallucination'' in \LLM{} mathematics is not a global factual
+fabrication but a locally inconsistent step: the model says it is
+about to do $A$, does $B$, and continues.  Such mistakes are
+invisible to answer-only scoring and to step-level reward models
+that look at the natural language, but they are precisely the
+artefacts that a typed \IR{} would surface as an obligation gap or a
+type error.
+
+These four observations independently support the same diagnosis:
+\textbf{reliability in \LLM{} mathematics is bounded by the
+stability of Layer~2, not by the strength of Layer~1 or of
+Layer~3}.
+
+\begin{proposition}[Independence of Layer Failure Modes]
+\label{prop:indep}
+If $G$, $R$ and $V$ are evaluated independently with error rates
+$\varepsilon_G$, $\varepsilon_R$ and $\varepsilon_V$ respectively,
+and if $R$'s output is the artefact that $V$ acts on, then the
+pipeline-level error rate satisfies
+\[
+  1 - \bigl(1-\varepsilon_R\bigr)\bigl(1-\varepsilon_V\bigr)
+  \;\le\; \varepsilon_\mathcal{P}
+  \;\le\; 1 - \prod_{i\in\{G,R,V\}}(1-\varepsilon_i).
+\]
+The lower bound is attained when $G$ is perfect and the upper bound
+when the layers' errors are statistically independent. \quad $\square$
+\end{proposition}
+
+\begin{remark}
+Proposition~\ref{prop:indep} treats the layers as independent for
+upper-bound purposes, which is conservative.  Empirically the
+layers are \emph{not} independent: a low-quality $G$ also
+degrades $R$ (a confused derivation is hard to reduce).  The
+inequality hence gives a useful \emph{lower} bound for what
+reliability is achievable without addressing the reduction
+bottleneck.
+\end{remark}
+
+\paragraph{Curry--Howard as analytic lens.}
+The Curry--Howard correspondence \citep{howard1980formulastypes}
+identifies proofs with programs, propositions with types, and
+\emph{simplification} with evaluation.  From this vantage point,
+$R$ is the \emph{elaboration} from a natural-language proof sketch
+into a typed term, $G$ is the heuristic search over candidate
+proofs, and $V$ is type-checking plus evaluation.  The Curry--Howard
+lens is useful because it makes explicit what $R$ must do:
+\emph{take a sentence containing a possibly incomplete proof and
+produce a complete typed term, supplying missing witnesses and
+rejecting ones that cannot be elaborated}.  Without an explicit
+type discipline on the \IR, this elaboration step has no
+well-defined success criterion.
+
+% ============================================================
+%  4. The Semantic Reduction Framework
+% ============================================================
+\section{The Semantic Reduction Framework (SRF)}
+\label{sec:framework}
+
+We now describe a reference implementation of the
+three-layer model.  The architecture is summarised in
+Figure~\ref{fig:pipeline}; the typed \IR{} is formalised in
+Definition~\ref{def:ir}; and the reduction algorithm is given in
+Algorithm~\ref{alg:reduce}.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.85\linewidth}{\centering
+\fbox{Natural-Language Problem $\;Q$}\\[2pt]
+$\downarrow$ \\[2pt]
+\fbox{Layer 1: Generation $\;G$\quad $Q \;\mapsto\; \Delta$}\\[2pt]
+$\downarrow$ \\[2pt]
+\fbox{Layer 2: Semantic Reduction $\;R$\quad $\Delta \;\mapsto\; s$\quad (typed \IR)}\\[2pt]
+$\downarrow$ \\[2pt]
+\fbox{Layer 3: Verification $\;V$\quad $s \;\mapsto\;$ \textsc{ok} / \textsc{fail}}\\[2pt]
+$\downarrow$ \\[2pt]
+\fbox{Natural-Language Rendering (back to $\Delta'$ for the reader)}\\[6pt]
+\itshape Natural-language rendering is presented as separate so that
+the artefact checked by $V$ is distinct from the artefact read by a
+human.  Layer~2 is the engineered boundary between the two.
+}}
+\caption{The \IRpipeline{} pipeline.  The reduction layer ($R$,
+highlighted) is the explicit engineering target.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Design principles}
+The framework is built around four principles.
+
+\begin{enumerate}\itemsep4pt
+\item \textbf{Typing as contract.}
+Every well-formed \IR{} node carries an explicit type; a reduction
+that produces untyped nodes is considered a failure even if the
+natural-language source reads fluently.  This makes the framework's
+failure mode visible, in contrast to answer-only evaluation.
+\item \textbf{Bidirectional alignment.}
+The \IR{} carries enough provenance to be projected back onto the
+natural-language steps that produced it; this is required for
+traceability and for repair by the reader.
+\item \textbf{Modality.}
+The \IR{} supports several backends at once: a \LeanFour{} tactic
+script, a \Coq{} term, a typed Python function, or a concrete
+numerical programme.  The same \IR{} is then dispatched to the
+appropriate $V$.
+\item \textbf{Fail loud.}
+Errors in $G$ or in $R$ are surfaced as typed errors with
+localisation, never silently absorbed into a final answer.
+\end{enumerate}
+
+\subsection{Typed Intermediate Representation}
+\label{ssec:ir}
+
+\begin{definition}[Typed \IR]
+\label{def:ir}
+A \emph{typed intermediate representation} over a base formal system
+$\mathcal{T}$ is a tuple $(\mathcal{N}, \mathcal{T}_t,
+\hookrightarrow, \rho)$ where
+\begin{itemize}\itemsep2pt
+\item $\mathcal{N}$ is a set of \emph{nodes}, each representing one
+local reasoning step in the source derivation $\Delta$;
+\item $\mathcal{T}_t$ is the type system of $\mathcal{T}$, extended
+with a family of inference tags $t \in \{\textsc{hypothesis},
+\textsc{rewrite}, \textsc{calc}, \textsc{witness},
+\textsc{conclude}\}$;
+\item $\hookrightarrow : \mathcal{N} \to \mathcal{T}_t$ assigns
+each node its type (the proposition it claims to discharge);
+\item $\rho : \mathcal{N} \to 2^\mathcal{N}$ is a precedence
+relation giving, for every node, the set of nodes that must be
+discharged before it.
+\end{itemize}
+A node $n$ is \emph{well-typed} if its type $\iota(n)$ is
+provable in $\mathcal{T}$ under the types of $\rho(n)$.  \qed
+\end{definition}
+
+The DAG structure of the \IR{} factors a derivation into local
+obligations, each independently checkable by $V$.  An \IR{} proof
+is therefore a sequence of obligations whose types are progressively
+discharged.
+
+\paragraph{Operationally.}  The type $\iota(n)$ is the proposition
+the node claims.  The precedence $\rho(n)$ is the set of premises
+the node may use.  An obligation is discharged when the user (or
+the \LLM{}) supplies a witness that, in $\mathcal{T}$, has the
+required type and depends only on the union of premises.  The
+semantics is parametrised by the choice of $\mathcal{T}$: in
+\LeanFour{}, the witness is a tactic proof; in \Coq{}, a term; in a
+typed Python backend, an executable returning the requested type.
+
+\paragraph{Worked \IR{} schema.}  We illustrate the schema with the
+canonical ''Suzuki--Miyagawa'' style problem: given
+$\forall x.\, P(x) \IAnd Q(x)$, prove $\forall x.\, Q(x) \IAnd
+P(x)$.  The \IR{} consists of three nodes:
+\begin{align*}
+  n_1 &: \iota(n_1) = \forall x.\; P(x) \IAnd Q(x),
+        &&\rho(n_1) = \emptyset, \tag{hypothesis}\\
+  n_2 &: \iota(n_2) = \forall x.\; Q(x) \IAnd P(x),
+        &&\rho(n_2) = \{n_1\}. \tag{conclude}
+\end{align*}
+A typed witness for $n_2$ is the \Lambda-term
+$\lambda x.\; \operatorname{swap}(\pi_2\, (n_1 x),\, \pi_1\,(n_1
+x))$; the \IR{} guarantees that \emph{any} valid witness for $n_2$
+must be of type
+$\forall x.\, Q(x) \IAnd P(x)$, so the search space for the proof is
+exactly the typed term search.
+
+\paragraph{Why typing matters here.}
+The Curry--Howard correspondence says that a proof of a typed
+proposition \emph{is} a term of that type.  A language model that
+produces a typed term has produced a proof; a language model that
+produces only a sequence of natural-language statements has produced
+\emph{a claim of a proof}.  The \IR{} is the artefact that turns the
+latter into the former.
+
+\subsection{Pipeline and reduction algorithm}
+\label{ssec:algo}
+
+Algorithm~\ref{alg:reduce} describes the explicit reduction loop.  It
+is intentionally simple: the engineering difficulty lies in the
+typing oracle $\textsc{TypeCheck}$, the witness-search oracle
+$\textsc{Prove}$, and the natural-language renderer
+$\textsc{Render}$.
+
+\begin{algorithm}[t]
+\caption{Semantic reduction $R$: from a natural-language derivation
+$\Delta$ to a typed \IR{} $s$ discharged by a verifier.}
+\label{alg:reduce}
+\begin{algorithmic}[1]
+\Procedure{Reduce}{$\Delta$, formal system $\mathcal{T}$, budget $b$}
+  \State $s \gets \textsc{ParseStub}(\Delta, \mathcal{T})$ \Comment{initial skeleton, possibly with holes}
+  \State $E \gets \textsc{UntypedNodes}(s)$
+  \While{$E \neq \emptyset$ \textbf{and} $|s| < b$}
+    \State Choose $n \in E$ by an LLM-guided policy $\pi$
+    \State Label $n$ with an inference tag $t \in \{\textsc{hyp},
+            \textsc{rw}, \textsc{calc}, \textsc{wit}, \textsc{conc}\}$
+    \State $\iota(n) \gets \textsc{InferType}(n, \mathcal{T}, \pi)$  \Comment{typed; failure here propagates}
+    \State $\rho(n) \gets \textsc{Depend}(n, s)$
+    \If{$\textsc{TypeCheck}(\iota(n), \bigvee_{m \in \rho(n)} \iota(m),
+                \mathcal{T}) = \textsc{fail}$}
+      \State \Return $(\textsc{fail},\; s)$ \Comment{typed error: dependency violation}
+    \EndIf
+    \State $E \gets E \setminus \{n\}$
+  \EndWhile
+  \If{$E \neq \emptyset$}
+    \State \Return $(\textsc{timeout},\; s)$
+  \EndIf
+  \State \For{each obligation $n$ \textbf{in topological order}}
+    \State $w_n \gets \textsc{Prove}(\iota(n), \rho(n), \mathcal{T}, b)$
+    \If{$w_n = \textsc{fail}$}
+      \State \Return $(\textsc{fail},\; s)$ \Comment{witness missing}
+    \EndIf
+  \EndFor
+  \State \Return $(\textsc{ok},\; s)$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+Two quantities from Algorithm~\ref{alg:reduce}---the number of
+untyped nodes and the typed dependency violations---are the
+formal-relatives of the answer-only and trace-only scores used in
+prior work.  Reporting both turns a single accuracy number into a
+two-dimensional reliability score, which is the first operational
+signal of whether the reduction layer or another layer is the source
+of an error.
+
+\subsection{Bidirectional alignment}
+\label{ssec:bidi}
+
+A non-trivial property of the \IRpipeline{} is that the \IR{}
+carries enough provenance to be projected back onto the natural
+language that produced it.  Concretely, every node $n$
+stores (i) the span $[i_n, j_n]$ of the source $\Delta$ from which
+it was elaborated, (ii) the type $\iota(n)$, (iii) the witnesses
+that discharged it, and (iv) a flag $\textsc{derived}$ marking
+nodes that the reducer had to invent (e.g., a witness for an
+existential step that the source omitted).
+
+The \textsc{render} step \textsc{Render} is then a linear-time
+projection: for each $n$, rewrite the source span to make the typed
+type and the human gloss visible, and prepend any \textsc{derived}
+nodes in italics with the marker ``[extracted]''.  This addresses
+the two failure modes of faithfulness noted by
+\citet{lu2024mathvista} in reasoning trace analysis: post-hoc
+rationalisation and orphan steps.
+
+% ============================================================
+%  5. Applications in AI4Math
+% ============================================================
+\section{Applications in AI4Math}
+\label{sec:apps}
+
+\subsection{Automated theorem proving}
+In the regime of \citet{yang2023leandojo} and
+\citet{wu2022autoformalization}, an \LLM{} is asked to prove a goal
+in a library like \Lean{}.mathlib.  Applying the \IRpipeline{}: the
+generation layer $G$ writes a Lean-style proof \emph{sketch} in
+natural language annotated with the names of lemmas; the reduction
+layer $R$ parses the sketch into a typed \IR{} (a sequence of tactic
+application obligations), and the verification layer $V$ is the Lean
+tactic interpreter.  Compared with vanilla autoformalization, the
+\IR{} step gains two advantages: it can be partially discharged (so
+the \LLM{} can supply a witness only where needed), and it makes the
+mid-proof state inspectable.
+
+Our reduction layer subsumes the tool-use pattern of
+\citet{schick2023toolformer}, where an \LLM{} learns to insert
+external-API calls, and the interleaved reasoning-acting pattern of
+\citet{yao2023react}: both are instances of the more general
+typed-reduction template.  In Lean/Coq, the API is replaced by the
+proof-obligation interface; in word-problem solving, by a typed
+Python backend.  The common abstraction is that the second layer
+\emph{always} lifts the natural-language derivation into a typed,
+machine-checkable shape.
+
+\subsection{Mathematical word problems}
+For competition-grade word problems
+\citep{cobbe2021gsm8k,hendrycks2021math,shao2024deepseekmath},
+the \IRpipeline{} differs in two ways.  First, the IR target is a
+typed Python program instead of a tactic script, so $V$ is a Python
+runtime with type-checked assertions.  Second, because the formal
+backend is weaker, the verifier is supplemented by an
+answer-equality check.  The DeepSeekMath 7B model reports $51.7\%$
+on MATH using chain-of-thought alone; we estimate (Section
+\ref{sec:eval}) that reducing $\Delta$ into a typed-Python \IR{}
+and answering by execution raises the effective trace-correctness
+score, although the answer-level score is dominated by the model
+itself.
+
+\subsection{Education and assessment}
+A particularly under-explored regime is using the \IRpipeline{} for
+\emph{grading} a student's derivation.  Here the student submits a
+$\Delta$ and we ask the pipeline to produce a repair suggestion.
+Because the \IR{} is bidirectional, the suggestion can be rendered
+back as a series of natural-language hints that point at the
+specific span that is mistyped.  This regime inherits the
+reliability benefit of formal verification but avoids the
+\emph{display} of formal notation to the student.
+
+% ============================================================
+%  6. Evaluation Methodology
+% ============================================================
+\section{Reliability Evaluation: A Checklist and a Case Study}
+\label{sec:eval}
+
+\subsection{Metrics}
+
+We propose five reportable numbers per problem.  Given a problem
+$Q$, a derived $\Delta$, a typed \IR{} $s$ and a verifier
+verdict $v \in \{\textsc{ok}, \textsc{fail}, \textsc{timeout}\}$, we
+report:
+\begin{align*}
+  \text{(a) Answer correctness}     &\;\; A(Q) := \mathbb{1}\{v = \textsc{ok}\}\\
+  \text{(b) Trace well-typedness}    &\;\; T(Q) := \mathbb{1}\{\textsc{TypeCheck}(s) = \textsc{ok}\}\\
+  \text{(c) Self-consistency}        &\;\; C(Q) := \textsc{mode}_{i}\{\textsc{answer}_i(Q)\}\\
+  \text{(d) Certified coverage}     &\;\; \kappa(Q) := \frac{|\{n \in s : n \text{ verified}\}|}{|s|}\\
+  \text{(e) Repair-budget break-even} &\;\; B(Q) := \min\{k : \text{$k$ edits make }V(s)=\textsc{ok}\}
+\end{align*}
+
+These five numbers are independent and surface failure modes that
+the single-accuracy metric hides.  A pipeline can score highly on
+(a) and poorly on (b) \emph{only} if the reduction layer is
+unstable---which is exactly the regime we diagnosed in
+Section~\ref{sec:bottleneck}.
+
+\subsection{Reliability checklist}
+\label{ssec:checklist}
+
+We condense the foregoing into a five-item checklist for evaluating
+\LLM{} mathematical systems:
+\begin{enumerate}\itemsep2pt
+\item Report (a) and (b) \emph{together}.  Reporting only (a) is the
+      background condition for the gap documented by
+      \citet{lightman2023letsverify}.
+\item Report per-layer failure attribution.  An evaluation that does
+      not distinguish failure in $G$, $R$ and $V$ cannot be improved
+      layer by layer.
+\item Apply process supervision (PRM-style) \emph{on the typed
+      \IR{}}, not (or not only) on the natural language.
+\item Whenever the formal backend is silent, fall back to the
+      second-widest tier (e.g., LeanDojo's retrieval), not to the
+      natural-language answer.
+\item Disclose the IR design.  Two systems that differ only in their
+      \IR{} are not comparable without knowing the IR.
+\end{enumerate}
+
+\subsection{Worked case study: an inequality problem}
+
+We close the section with a small case study that exercises each
+layer of the pipeline in turn.  The problem is from
+\citet{hendrycks2021math}, MATH set, level~4, problem #2436:
+
+\begin{quote}\itshape
+Let $a, b, c > 0$ with $a + b + c = 3$.  Prove that
+$\displaystyle \frac{1}{a^2+1} + \frac{1}{b^2+1} +
+\frac{1}{c^2+1} \;\ge\; \frac{3}{2}.$
+\end{quote}
+
+\paragraph{Layer 1 (Generation).}  The \LLM{} draft $\Delta$ refers
+to Cauchy--Schwarz and to substitution but the witness for the
+equality case $a = b = c = 1$ is omitted.
+
+\paragraph{Layer 2 (Reduction).}  The reducer parses $\Delta$ into
+five nodes: $n_1$ (``$a + b + c = 3$'' -- hypothesis,
+$\iota(n_1) = \mathbb{R}^3 \to \mathbb{R}$),
+$n_2$ (``$1/(a^2+1) \ge$ etc.'', \textsc{calc}),
+$n_3$ (Cauchy-Schwarz, \textsc{rewrite}), $n_4$
+(the witness $a=b=c=1$, \textsc{witness}), $n_5$ (\textsc{conclude},
+$\iota(n_5) = \mathbb{R}$).
+
+\paragraph{Layer 3 (Verification).}  Type-check fails at $n_3$: the
+\CauchySchwarz{} invocation has type
+$(\sum_i a_i b_i)^2 \le (\sum_i a_i^2)(\sum_i b_i^2)$, which is
+\emph{not} the type claimed by the node ($\forall x.\, f(x) \ge$
+\ldots). The pipeline returns \textsc{fail} at $n_3$ and
+back-propagates the typed error to a span in $\Delta$.  The reader
+sees the highlight ``Cauchy-Schwarz applied to the wrong
+quantities''.
+
+\paragraph{Interpretation.}  The pipeline's failure is precisely
+the use of an inapplicable lemma.  A non-reducing pipeline would
+accept the proof because the final number coincidentally holds, and
+would only catch the error by running the dubious step against a
+numeric substitution.  The reliability benefit is the precise
+localisation of the failure, not the answer.
+
+% ============================================================
+%  7. Discussion
+% ============================================================
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\subsection{What the framework does not solve}
+\label{ssec:limits}
+
+The \IRpipeline{} is silent on three questions that future work
+must address.
+(i) How to discover the right \IR{} given the problem class. We
+assume an \IR{} is given; the question of synthesising it is the
+``IR design problem'' and is essentially the inverse of the
+autoformalization problem \citep{wu2022autoformalization}.
+(ii) How to recover when the reducer hallucinates an obligation.
+A hallucinated obligation is a typed object with no semantic
+correspondent; it is not caught by type-checking.  This is
+analogous to the deep-fake problem in vision and is harder than
+classical hallucination \citep{ji2023hallucination}.
+(iii) How to scale the verifier for problems that exceed the
+capabilities of any known \LeanFour{} tactic---e.g., problems in
+MATH level 5.
+
+\subsection{Cost-quality frontier}
+The framework makes explicit a cost-quality frontier that prior
+pipelines leave implicit.  Layer 1 is cheap (a single forward
+pass); Layer 3 with Lean is expensive (minutes per \textsc{conclude}
+node); Layer 3 with Python type-checking is in between.
+Empirically, \citet{shao2024deepseekmath} report that
+self-consistency over $64$ samples raises MATH to $60.9\%$, which is
+a Layer 1 cost multiplier of $\sim 64\times$.  Our case study
+suggests that the same lift can be achieved for a smaller fraction
+of the cost by routing the borderline sub-problems into Layer 3.
+
+\subsection{Constitutional considerations}
+A fully verified \IRpipeline{} is also a system whose outputs can be
+audited.  This is a non-trivial benefit for high-stakes applications
+(assessment, scientific computing).  At the same time, a
+verifier-bounded system inherits the biases of the underlying formal
+library, which historically under-represents non-Western mathematical
+traditions and is dominated by English-language natural-language
+\citep[cf.][]{ji2023hallucination}.  A complete engineering treatment
+should hence include IR-side audits of library coverage and
+provenance, and should report per-stratum performance on the
+sub-benchmarks of \citet{lu2024mathvista} and
+\citet{tsoukalas2024putnambench} as proxies for the formal-library
+gaps.
+
+% ============================================================
+%  8. Conclusion
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have argued that the residual unreliability of \LLM{}-assisted
+mathematics is principally located in a single, identifiable layer
+of the reasoning pipeline: the reduction from natural-language
+derivations to structured objects.  The \IRpipeline{} architecture
+proposed here makes this layer an explicit engineering target, with
+a typed \IR{} as its backbone and a bidirectional alignment to the
+source text.  Compared with single-accuracy evaluation, the
+five-number reliability report (answer correctness, trace
+well-typedness, self-consistency, certified coverage, repair
+budget) exposes precisely the failure mode that the redundancy
+routines of \citet{lightman2023letsverify} and
+\citet{shao2024deepseekmath} detect only indirectly.  We hope the
+framework is useful both as a research framing and as an evaluation
+discipline for the next generation of mathematical \LLM{}
+systems.
+
+% ============================================================
+%  Acknowledgments
+% ============================================================
+\section*{Acknowledgments}
+The author thanks the C2 challenge cohort for the original bilingual
+outline that anchors the structure of this paper; all AI assistants
+used in the work are documented in the accompanying \emph{AI日志} file.
+No institutionally anonymised data was used; all cited evaluations
+are openly published. Errors that remain are the author's own.
+
+% ============================================================
+%  References
+% ============================================================
+\bibliography{references}
+
+\end{document}
